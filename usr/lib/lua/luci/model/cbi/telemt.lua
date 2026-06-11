@@ -200,7 +200,7 @@ end
 if is_post and http.formvalue("reset_config") == "1" then
     sys.call("logger -t telemt 'WebUI: FACTORY RESET ALL SETTINGS'")
     local default_uci =
-    "config telemt 'general'\n\toption enabled '0'\n\toption mode 'tls'\n\toption domain 'google.com'\n\toption port '8443'\n\toption metrics_port '9092'\n\toption api_port '9091'\n\toption extended_runtime_enabled '1'\n\toption metrics_allow_lo '1'\n\toption metrics_allow_lan '1'\n\toption log_level 'normal'\n"
+    "config telemt 'general'\n\toption enabled '0'\n\toption mode 'tls'\n\toption domain 'google.com'\n\toption port '8443'\n\toption metrics_listen '127.0.0.1:9090'\n\toption api_listen '127.0.0.1:9091'\n\toption metrics_port '9092'\n\toption api_port '9091'\n\toption extended_runtime_enabled '1'\n\toption metrics_allow_lo '1'\n\toption metrics_allow_lan '1'\n\toption log_level 'normal'\n"
     local f = io.open("/tmp/telemt_reset.tmp", "w")
     if f then
         f:write(default_uci); f:close()
@@ -251,12 +251,23 @@ if http.formvalue("get_fw_status") == "1" then
     end); end_ajax(); return
 end
 
+local function parse_listen_port(v)
+    if type(v) ~= "string" then return nil end
+    v = v:gsub("^%s*(.-)%s*$", "%1")
+    local p = v:match("^%[.-%]:(%d+)$") or v:match(":(%d+)$")
+    p = tonumber(p)
+    if p and p > 0 and p < 65536 then return p end
+    return nil
+end
+
 -- ==============================================================================
 -- ZERO-COST MULTIPLEXED METRICS & API POLLING
 -- ==============================================================================
 if http.formvalue("get_metrics") == "1" then
-    local m_port = tonumber(uci_cursor:get("telemt", "general", "metrics_port")) or 9092
-    local api_port = tonumber(uci_cursor:get("telemt", "general", "api_port")) or 9091
+    local m_port = parse_listen_port(uci_cursor:get("telemt", "general", "metrics_listen")) or
+        tonumber(uci_cursor:get("telemt", "general", "metrics_port")) or 9092
+    local api_port = parse_listen_port(uci_cursor:get("telemt", "general", "api_listen")) or
+        tonumber(uci_cursor:get("telemt", "general", "api_port")) or 9091
     local ext_rt = uci_cursor:get("telemt", "general", "extended_runtime_enabled") or "1"
 
     local metrics = ""
@@ -347,7 +358,8 @@ end
 -- OTHER AJAX ENDPOINTS
 -- ==============================================================================
 if http.formvalue("get_scanners") == "1" then
-    local m_port = tonumber(uci_cursor:get("telemt", "general", "metrics_port")) or 9092
+    local m_port = parse_listen_port(uci_cursor:get("telemt", "general", "metrics_listen")) or
+        tonumber(uci_cursor:get("telemt", "general", "metrics_port")) or 9092
     local res = http_get_local("http://127.0.0.1:" .. m_port .. "/beobachten", 3)
     if not res or res:gsub("%s+", "") == "" then res = "No active scanners detected or proxy is offline." end
     http.prepare_content("text/plain"); pcall(function() http.write(res) end); end_ajax(); return
@@ -816,6 +828,14 @@ local api_chk = s:taboption("advanced", Flag, "extended_runtime_enabled",
     tip("Unified switch. Required for detailed UI diagnostics, Live Traffic stats, and the autonomous Telegram Bot."))
 api_chk.default = "1"
 api_chk.rmempty = false
+local mlst = s:taboption("advanced", Value, "metrics_listen",
+    "Prometheus Listen" .. tip("Listen address for Prometheus endpoint in host:port format. Default: 127.0.0.1:9092. (Override metrics_port)"))
+mlst.datatype = "hostport"
+mlst.default = "127.0.0.1:9092"
+local alst = s:taboption("advanced", Value, "api_listen",
+    "Control API Listen" .. tip("Listen address for Control API in host:port format. Default: 127.0.0.1:9091. Override port if needed."))
+alst.datatype = "hostport"
+alst.default = "127.0.0.1:9091"
 local mport = s:taboption("advanced", Value, "metrics_port",
     "Prometheus Port" .. tip("Port for internal Prometheus exporter. Default: 9092.")); mport.datatype = "port"; mport.default =
 "9092"
@@ -839,7 +859,8 @@ function mwl.validate(self, v)
     return v
 end
 
-local cur_m_port = tonumber(m.uci:get("telemt", "general", "metrics_port")) or 9092
+local cur_m_port = parse_listen_port(m.uci:get("telemt", "general", "metrics_listen")) or
+    tonumber(m.uci:get("telemt", "general", "metrics_port")) or 9092
 local mlink = s:taboption("advanced", DummyValue, "_mlink",
     "Prometheus Endpoint" .. tip("Click to open in a new tab, or copy for Grafana.")); mlink.rawhtml = true
 mlink.default = string.format(
